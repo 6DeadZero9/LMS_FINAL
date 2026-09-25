@@ -1,0 +1,21 @@
+world_name: sensor_course
+robot_name: burger
+spawn:
+  x: 0.0
+  y: 0.0
+  yaw: 0.0
+path:
+  x_min: 0.0
+  x_max: 2.0
+  y_min: 0.0
+  y_max: 2.0
+  spacing: 0.05
+# Burger LDS-01 is 3.2 cm behind base_link. base_link sits on base_footprint.
+scan_frame_offset:
+  x: -0.032
+  y: 0.0
+landmarks:
+  - {name: pole_ne, x: 2.7, y: 2.7, radius: 0.12}
+  - {name: pole_nw, x: -0.7, y: 2.7, radius: 0.12}
+  - {name: pole_se, x: 2.7, y: -0.7, radius: 0.12}
+  - {name: pole_sw, x: -0.7, y: -0.7, radius: 0.12}

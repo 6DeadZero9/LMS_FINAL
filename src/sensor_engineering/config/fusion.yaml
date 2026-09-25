@@ -1,0 +1,23 @@
+initial_selection: "imu_odom_lidar"
+
+noise:
+  seed: 7
+  accel_std: 0.05
+  gyro_std: 0.01
+  gyro_bias: 0.008
+  odom_v_std: 0.015
+
+ekf:
+  sig_ax: 0.08
+  sig_wz: 0.02
+  sig_bg: 0.0008
+  r_odom_v: 0.05
+  r_range: 0.06
+  r_bearing: 0.05
+  lidar_gate: 16.0
+
+navigation:
+  linear_speed: 0.16
+  lookahead: 0.35
+  max_yaw_rate: 1.2
+  command_rate_hz: 20.0
