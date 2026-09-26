@@ -19,4 +19,6 @@ venv/
 .idea/
 .DS_Store
 
-results/
+# Generated run dumps live under results/; keep folders, ignore nothing by default
+# so graded archives can include CSV and PNG evidence.
+results/**/.DS_Store

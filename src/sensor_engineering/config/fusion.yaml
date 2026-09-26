@@ -12,9 +12,10 @@ ekf:
   sig_wz: 0.02
   sig_bg: 0.0008
   r_odom_v: 0.05
-  r_range: 0.06
-  r_bearing: 0.05
-  lidar_gate: 16.0
+  # Match ~1 cm range noise so NIS ≈ measurement dim (2) when consistent.
+  r_range: 0.01
+  r_bearing: 0.02
+  lidar_gate: 9.0
 
 navigation:
   linear_speed: 0.16

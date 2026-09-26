@@ -1,0 +1,5 @@
+mode,ate_rmse_m,yaw_rmse_rad,samples,nis_mean,nis_accepted,nis_total
+imu,0.805100,0.283173,1148,,0,0
+imu_odom,0.304976,0.283173,1148,,0,0
+imu_lidar,0.037682,0.004896,1148,,0,0
+imu_odom_lidar,0.034592,0.004646,1148,,0,0

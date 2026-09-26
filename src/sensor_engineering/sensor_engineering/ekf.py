@@ -72,24 +72,26 @@ class ExtendedKalmanFilter:
         r_range: float,
         r_bearing: float,
         gate: float,
-    ) -> bool:
+    ) -> tuple[bool, float]:
+        """Return (accepted, NIS). NIS is χ² innovation for consistency checks."""
         dx = landmark_xy[0] - self.x[X]
         dy = landmark_xy[1] - self.x[Y]
         q = max(dx * dx + dy * dy, 1e-6)
         rng = max(np.sqrt(q), 1e-3)
-        innov = np.array([z_range - rng, wrap_angle(z_bearing - (np.atan2(dy, dx) - self.x[YAW]))])
+        innov = np.array([z_range - rng, wrap_angle(z_bearing - (np.arctan2(dy, dx) - self.x[YAW]))])
         H = np.zeros((2, N))
         H[0, X], H[0, Y] = -dx / rng, -dy / rng
         H[1, X], H[1, Y], H[1, YAW] = dy / q, -dx / q, -1.0
         R = np.diag([r_range**2, r_bearing**2])
         S = H @ self.P @ H.T + R
         try:
-            if float(innov.T @ np.linalg.solve(S, innov)) > gate:
-                return False
+            nis = float(innov.T @ np.linalg.solve(S, innov))
         except np.linalg.LinAlgError:
-            return False
+            return False, float('inf')
+        if nis > gate:
+            return False, nis
         self._correct(innov, H, R)
-        return True
+        return True, nis
 
     def pose(self) -> tuple[float, float, float, float]:
         return float(self.x[X]), float(self.x[Y]), float(self.x[YAW]), float(self.x[V])

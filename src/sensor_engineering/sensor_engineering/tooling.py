@@ -52,7 +52,7 @@ def yaw_to_quaternion(yaw: float) -> tuple[float, float, float, float]:
 
 
 def quaternion_to_yaw(x: float, y: float, z: float, w: float) -> float:
-    return float(np.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+    return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
 # --- ROS / time helpers ------------------------------------------------------------
@@ -242,7 +242,7 @@ def match_clusters(
     for lx, ly, _ in landmarks:
         dx, dy = lx - px, ly - py
         xb, yb = c * dx + s * dy, -s * dx + c * dy
-        preds.append((float(np.hypot(xb, yb)), float(np.atan2(yb, xb))))
+        preds.append((float(np.hypot(xb, yb)), float(np.arctan2(yb, xb))))
 
     used: set[int] = set()
     fixes: list[LandmarkFix] = []
@@ -256,7 +256,7 @@ def match_clusters(
             if i in used:
                 continue
             center = surface + (radius / norm) * surface
-            mr, mb = float(np.linalg.norm(center)), float(np.atan2(center[1], center[0]))
+            mr, mb = float(np.linalg.norm(center)), float(np.arctan2(center[1], center[0]))
             pr, pb = preds[i]
             score = ((mr - pr) / range_gate) ** 2 + (float(wrap_angle(mb - pb)) / bearing_gate) ** 2
             if score < best_score:
@@ -319,3 +319,174 @@ def score_trajectories(gt_rows, est_rows) -> tuple[float, float, int]:
         return float('nan'), float('nan'), 0
     kept = est[idx]
     return ate_rmse(kept[:, 1:3], matched[:, 0:2]), yaw_rmse(kept[:, 3], matched[:, 2]), int(idx.size)
+
+
+# --- results dumps (CSV + PNG under results/) --------------------------------------
+
+def project_root() -> 'Path':
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[3]
+
+
+def finish_timestamp() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime('%Y%m%d_%H%M%S')
+
+
+def results_dirs(root: 'Path | None' = None) -> tuple['Path', 'Path']:
+    from pathlib import Path
+
+    base = (root or project_root()) / 'results'
+    csv_dir = base / 'csv'
+    img_dir = base / 'images'
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    img_dir.mkdir(parents=True, exist_ok=True)
+    return csv_dir, img_dir
+
+
+def _write_traj_csv(path: 'Path', rows) -> None:
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('t,x,y,yaw\n')
+        for row in rows:
+            f.write(f'{float(row[0]):.6f},{float(row[1]):.6f},{float(row[2]):.6f},{float(row[3]):.6f}\n')
+
+
+def dump_run_results(
+    gt_rows,
+    est_rows: dict,
+    nis_rows: dict | None = None,
+    plan=None,
+    stamp: str | None = None,
+) -> str:
+    """Write one finish-timestamped CSV set and one PNG per graphic under results/."""
+    import csv
+
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    stamp = stamp or finish_timestamp()
+    csv_dir, img_dir = results_dirs()
+    nis_rows = nis_rows or {}
+
+    ate_vals: list[float] = []
+    yaw_vals: list[float] = []
+    nis_means: list[float] = []
+
+    metrics_path = csv_dir / f'{stamp}_metrics_summary.csv'
+    with open(metrics_path, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ['mode', 'ate_rmse_m', 'yaw_rmse_rad', 'samples', 'nis_mean', 'nis_accepted', 'nis_total']
+        )
+        for mode in MODES:
+            ate, yaw_err, n = score_trajectories(gt_rows, est_rows.get(mode, []))
+            nis_list = list(nis_rows.get(mode, []))
+            accepted = [float(r[1]) for r in nis_list if len(r) >= 3 and bool(r[2])]
+            nis_mean = float(np.mean(accepted)) if accepted else float('nan')
+            writer.writerow(
+                [
+                    mode,
+                    f'{ate:.6f}' if not math.isnan(ate) else '',
+                    f'{yaw_err:.6f}' if not math.isnan(yaw_err) else '',
+                    n,
+                    f'{nis_mean:.6f}' if accepted else '',
+                    len(accepted),
+                    len(nis_list),
+                ]
+            )
+            ate_vals.append(0.0 if math.isnan(ate) else ate)
+            yaw_vals.append(0.0 if math.isnan(yaw_err) else yaw_err)
+            nis_means.append(nis_mean)
+
+    if gt_rows:
+        _write_traj_csv(csv_dir / f'{stamp}_trajectory_gt.csv', gt_rows)
+    for mode in MODES:
+        rows = est_rows.get(mode) or []
+        if rows:
+            _write_traj_csv(csv_dir / f'{stamp}_trajectory_{mode}.csv', rows)
+        nis_list = list(nis_rows.get(mode, []))
+        if nis_list:
+            with open(csv_dir / f'{stamp}_nis_{mode}.csv', 'w', encoding='utf-8') as f:
+                f.write('t,nis,accepted\n')
+                for row in nis_list:
+                    f.write(f'{float(row[0]):.6f},{float(row[1]):.6f},{int(bool(row[2]))}\n')
+
+    labels = [MODE_LABELS[m] for m in MODES]
+    colors = [MODE_COLORS[m] for m in MODES]
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=120)
+    if plan:
+        p = np.asarray(plan, float)
+        ax.plot(p[:, 0], p[:, 1], color='#888', ls='--', lw=1, label='Plan')
+    if gt_rows:
+        g = np.asarray(gt_rows, float)
+        ax.plot(g[:, 1], g[:, 2], color='black', lw=2, label='Ground truth')
+    for mode in MODES:
+        rows = est_rows.get(mode) or []
+        if not rows:
+            continue
+        a = np.asarray(rows, float)
+        ax.plot(a[:, 1], a[:, 2], color=MODE_COLORS[mode], lw=1.6, label=MODE_LABELS[mode])
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_title('EKF trajectories')
+    ax.set_xlabel('x (m)')
+    ax.set_ylabel('y (m)')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=8)
+    fig.tight_layout()
+    fig.savefig(img_dir / f'{stamp}_trajectories.png')
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 4), dpi=120)
+    ax.bar(labels, ate_vals, color=colors)
+    ax.set_title('ATE RMSE (m)')
+    ax.tick_params(axis='x', labelrotation=15)
+    ax.grid(True, axis='y', alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(img_dir / f'{stamp}_ate_rmse.png')
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 4), dpi=120)
+    ax.bar(labels, yaw_vals, color=colors)
+    ax.set_title('Yaw RMSE (rad)')
+    ax.tick_params(axis='x', labelrotation=15)
+    ax.grid(True, axis='y', alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(img_dir / f'{stamp}_yaw_rmse.png')
+    plt.close(fig)
+
+    has_nis = any(not math.isnan(v) for v in nis_means)
+    if has_nis:
+        plot_vals = [0.0 if math.isnan(v) else v for v in nis_means]
+        fig, ax = plt.subplots(figsize=(7, 4), dpi=120)
+        ax.bar(labels, plot_vals, color=colors)
+        ax.axhline(2.0, color='#444', ls='--', lw=1, label='E[NIS]=2 (2-DoF)')
+        ax.set_title('Mean landmark NIS (accepted updates)')
+        ax.tick_params(axis='x', labelrotation=15)
+        ax.grid(True, axis='y', alpha=0.3)
+        ax.legend(loc='best', fontsize=8)
+        fig.tight_layout()
+        fig.savefig(img_dir / f'{stamp}_nis_mean.png')
+        plt.close(fig)
+
+        for mode in MODES:
+            nis_list = list(nis_rows.get(mode, []))
+            if not nis_list:
+                continue
+            arr = np.asarray(nis_list, float)
+            fig, ax = plt.subplots(figsize=(8, 3.5), dpi=120)
+            ax.plot(arr[:, 0] - arr[0, 0], arr[:, 1], color=MODE_COLORS[mode], lw=1.0)
+            ax.axhline(2.0, color='#444', ls='--', lw=1)
+            ax.set_title(f'NIS over time — {MODE_LABELS[mode]}')
+            ax.set_xlabel('t (s, relative)')
+            ax.set_ylabel('NIS')
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(img_dir / f'{stamp}_nis_timeseries_{mode}.png')
+            plt.close(fig)
+
+    return stamp

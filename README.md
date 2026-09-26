@@ -31,3 +31,12 @@ ros2 launch sensor_engineering sensor_course.launch.py
 ```
 
 `gz_gui:=false` / `start_gui:=false` hide Gazebo / the dashboard.
+
+## Results dumps
+
+When the robot finishes one square lap (or when `fusion_node` shuts down), metrics and plots are written under:
+
+- `results/csv/` — ATE/yaw summary, per-suite trajectories, per-suite NIS time series
+- `results/images/` — trajectories, ATE bar, yaw bar, mean NIS, NIS time series
+
+Every file is prefixed with the finish timestamp (`YYYYMMDD_HHMMSS_…`). LiDAR measurement noise is `r_range=0.01` m / `r_bearing=0.02` rad so landmark NIS should sit near 2 for a consistent filter. Uses `np.arctan2` (NumPy 1.26 / Ubuntu 24.04).

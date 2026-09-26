@@ -7,11 +7,11 @@ from collections import deque
 
 import numpy as np
 import yaml
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from sensor_engineering.ekf import ExtendedKalmanFilter, process_noise
 from sensor_engineering.tooling import (
@@ -20,6 +20,8 @@ from sensor_engineering.tooling import (
     ate_rmse,
     body_forward_accel,
     clusters_from_ranges,
+    dump_run_results,
+    finish_timestamp,
     make_odom,
     match_clusters,
     mode_uses_lidar,
@@ -69,6 +71,9 @@ class FusionNode(Node):
         self.last_publish = 0.0
         self.gt_history: deque = deque(maxlen=8000)
         self.est_history = {m: deque(maxlen=8000) for m in MODES}
+        self.nis_history = {m: deque(maxlen=8000) for m in MODES}
+        self.plan = None
+        self._dumped = False
 
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
         self.pubs = {m: self.create_publisher(Odometry, f'/fusion/{m}/odom', 10) for m in MODES}
@@ -79,6 +84,8 @@ class FusionNode(Node):
         self.create_subscription(Imu, '/imu', self._on_imu, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self._on_odom, qos_profile_sensor_data)
         self.create_subscription(LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
+        self.create_subscription(Path, '/ground_truth/path', self._on_path, latched)
+        self.create_subscription(Bool, '/navigation/lap_done', self._on_lap_done, latched)
         self.create_timer(0.5, self._publish_metrics)
         self.get_logger().info(f'EKF active suite: {self.mode}')
 
@@ -87,6 +94,13 @@ class FusionNode(Node):
         if mode and mode != self.mode:
             self.mode = mode
             self.get_logger().info(f'Active suite: {mode}')
+
+    def _on_path(self, msg: Path) -> None:
+        self.plan = [(float(p.pose.position.x), float(p.pose.position.y)) for p in msg.poses]
+
+    def _on_lap_done(self, msg: Bool) -> None:
+        if msg.data:
+            self.dump_results('lap_done')
 
     def _ensure(self, x: float, y: float, yaw: float) -> None:
         if self.ready:
@@ -134,6 +148,7 @@ class FusionNode(Node):
     def _on_scan(self, msg: LaserScan) -> None:
         if not self.ready:
             return
+        stamp = stamp_to_sec(msg.header.stamp)
         clusters = clusters_from_ranges(
             np.asarray(msg.ranges, dtype=float),
             float(msg.angle_min),
@@ -145,9 +160,10 @@ class FusionNode(Node):
             if not mode_uses_lidar(mode):
                 continue
             for fix in match_clusters(clusters, self.landmarks, filt.pose()[:3], self.scan_offset):
-                filt.update_landmark(
+                accepted, nis = filt.update_landmark(
                     fix.range_m, fix.bearing_rad, fix.map_xy, self.r_range, self.r_bearing, self.lidar_gate
                 )
+                self.nis_history[mode].append((stamp, nis, accepted))
 
     def _publish(self, stamp) -> None:
         t = stamp_to_sec(stamp)
@@ -158,6 +174,17 @@ class FusionNode(Node):
             self.pubs[mode].publish(msg)
             if mode == self.mode:
                 self.active_pub.publish(msg)
+
+    def _nis_stats(self, mode: str) -> dict:
+        rows = list(self.nis_history[mode])
+        accepted = [float(r[1]) for r in rows if r[2]]
+        if not accepted:
+            return {'nis_mean': None, 'nis_accepted': 0, 'nis_total': len(rows)}
+        return {
+            'nis_mean': float(np.mean(accepted)),
+            'nis_accepted': len(accepted),
+            'nis_total': len(rows),
+        }
 
     def _publish_metrics(self) -> None:
         if len(self.gt_history) < 5:
@@ -172,14 +199,43 @@ class FusionNode(Node):
             if idx.size < 5:
                 continue
             est = samples[idx]
-            payload['modes'][mode] = {
+            entry = {
                 'ate_rmse': ate_rmse(est[:, 1:3], matched[:, 0:2]),
                 'yaw_rmse': yaw_rmse(est[:, 3], matched[:, 2]),
                 'samples': int(idx.size),
             }
+            entry.update(self._nis_stats(mode))
+            payload['modes'][mode] = entry
         out = String()
         out.data = json.dumps(payload)
         self.metrics_pub.publish(out)
+
+    def dump_results(self, reason: str = 'manual') -> str | None:
+        if self._dumped or len(self.gt_history) < 5:
+            return None
+        stamp = finish_timestamp()
+        try:
+            dump_run_results(
+                list(self.gt_history),
+                {m: list(self.est_history[m]) for m in MODES},
+                {m: list(self.nis_history[m]) for m in MODES},
+                plan=None if self.plan is None else list(self.plan),
+                stamp=stamp,
+            )
+        except Exception as exc:  # noqa: BLE001 — never crash the node on I/O
+            self.get_logger().error(f'Results dump failed ({reason}): {exc}')
+            return None
+        self._dumped = True
+        parts = []
+        for mode in MODES:
+            stats = self._nis_stats(mode)
+            if stats['nis_accepted']:
+                parts.append(f"{mode} NIS_mean={stats['nis_mean']:.3f} (n={stats['nis_accepted']})")
+        nis_txt = '; '.join(parts) if parts else 'no LiDAR NIS'
+        self.get_logger().info(
+            f'Results written under results/csv and results/images (stamp={stamp}, reason={reason}). {nis_txt}'
+        )
+        return stamp
 
 
 def main() -> None:
@@ -192,5 +248,6 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        node.dump_results('shutdown')
         node.destroy_node()
         rclpy.shutdown()

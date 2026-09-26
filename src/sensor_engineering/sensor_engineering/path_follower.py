@@ -8,6 +8,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from std_msgs.msg import Bool
 
 from sensor_engineering.tooling import quaternion_to_yaw, pure_pursuit
 
@@ -37,6 +38,7 @@ class PathFollower(Node):
         self.done = False
         self._last_log = 0.0
         self.cmd_pub = self.create_publisher(TwistStamped, '/cmd_vel', 10)
+        self.done_pub = self.create_publisher(Bool, '/navigation/lap_done', latched)
         self.create_subscription(Path, '/ground_truth/path', self._on_path, latched)
         self.create_subscription(Odometry, '/ground_truth/odom', self._on_pose, qos_profile_sensor_data)
         self.create_timer(1.0 / rate, self._command, clock=Clock(clock_type=ClockType.SYSTEM_TIME))
@@ -100,6 +102,9 @@ class PathFollower(Node):
             self.done = True
             linear, angular = 0.0, 0.0
             self.get_logger().info('Finished one square lap; stopping')
+            done_msg = Bool()
+            done_msg.data = True
+            self.done_pub.publish(done_msg)
         message.twist.linear.x = linear
         message.twist.angular.z = angular
         self.cmd_pub.publish(message)
